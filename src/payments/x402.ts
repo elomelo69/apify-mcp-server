@@ -90,6 +90,8 @@ function hasPaymentRequiredBranch(schema: Record<string, unknown> | undefined): 
 // problem during server startup, where multiple concurrent incoming requests might otherwise
 // trigger duplicate identical fetches to the Apify API before the first one finishes.
 let cachedRequirementsPromise: Promise<X402PaymentRequirements | undefined> | null = null;
+// The origin the cached promise was fetched from; a call for another origin refetches.
+let cachedApiBaseUrl: string | undefined;
 let lastFetchTime = 0;
 // Cache TTL: 30 minutes
 const CACHE_TTL_MS = 30 * 60 * 1000;
@@ -103,7 +105,9 @@ const CACHE_TTL_MS = 30 * 60 * 1000;
  *
  * @returns The decoded payment requirements, or undefined if the fetch fails.
  */
-export async function fetchX402PaymentRequirements(): Promise<X402PaymentRequirements | undefined> {
+export async function fetchX402PaymentRequirements(
+    apiBaseUrl: string = getApifyAPIBaseUrl(),
+): Promise<X402PaymentRequirements | undefined> {
     const now = Date.now();
     // If we have a cached promise, and the TTL hasn't expired since it successfully resolved, return it.
     // Note: During the very first fetch, lastFetchTime is 0, so this will be false and we will
@@ -111,12 +115,12 @@ export async function fetchX402PaymentRequirements(): Promise<X402PaymentRequire
     // block *while the first fetch is still in-flight*, they will also see lastFetchTime = 0 and
     // create duplicate promises. This is a known minor flaw in this specific caching pattern, but
     // acceptable since the overhead of a few duplicate calls during cold-start is negligible.
-    if (cachedRequirementsPromise && now - lastFetchTime < CACHE_TTL_MS) {
+    if (cachedRequirementsPromise && cachedApiBaseUrl === apiBaseUrl && now - lastFetchTime < CACHE_TTL_MS) {
         return cachedRequirementsPromise;
     }
 
+    cachedApiBaseUrl = apiBaseUrl;
     cachedRequirementsPromise = (async () => {
-        const apiBaseUrl = getApifyAPIBaseUrl();
         const url = `${apiBaseUrl}/v2/acts/`;
 
         const controller = new AbortController();
@@ -207,9 +211,10 @@ export class X402PaymentProvider implements PaymentProvider {
     /**
      * Creates an X402PaymentProvider, fetching payment requirements from the Apify API.
      * Falls back to a provider without full requirements if the fetch fails.
+     * `apiBaseUrl` is where API requests go; `getApifyAPIBaseUrl()` when omitted.
      */
-    static async create(): Promise<X402PaymentProvider> {
-        const requirements = await fetchX402PaymentRequirements();
+    static async create(apiBaseUrl?: string): Promise<X402PaymentProvider> {
+        const requirements = await fetchX402PaymentRequirements(apiBaseUrl);
         return new X402PaymentProvider(requirements);
     }
 
